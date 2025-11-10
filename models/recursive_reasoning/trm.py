@@ -126,8 +126,21 @@ class TinyRecursiveReasoningModel_ACTV1_Inner(nn.Module):
         self.embed_scale = math.sqrt(self.config.hidden_size)
         embed_init_std = 1.0 / self.embed_scale
 
-        self.embed_tokens = CastedEmbedding(self.config.vocab_size, self.config.hidden_size, init_std=embed_init_std, cast_to=self.forward_dtype)
-        self.lm_head      = CastedLinear(self.config.hidden_size, self.config.vocab_size, bias=False)
+        # ---
+        # MODIFICATION #1: Replaced Classification layers with Regression layers
+        # ---
+        # DELETED: self.embed_tokens = CastedEmbedding(...)
+        # DELETED: self.lm_head      = CastedLinear(..., self.config.vocab_size, ...)
+        # self.embed_tokens = CastedEmbedding(self.config.vocab_size, self.config.hidden_size, init_std=embed_init_std, cast_to=self.forward_dtype)
+        # self.lm_head      = CastedLinear(self.config.hidden_size, self.config.vocab_size, bias=False)
+        
+        # Our input is (MachineID, Duration), so 2 features
+        self.input_proj = CastedLinear(2, self.config.hidden_size, bias=False)
+
+        # Our output is (StartTime), so 1 feature
+        self.lm_head      = CastedLinear(self.config.hidden_size, 1, bias=False)
+        # --- END OF MODIFICATION #1 ---
+
         self.q_head       = CastedLinear(self.config.hidden_size, 2, bias=True)
 
         self.puzzle_emb_len = -(self.config.puzzle_emb_ndim // -self.config.hidden_size)  if self.config.puzzle_emb_len == 0 else self.config.puzzle_emb_len  # ceil div
@@ -160,8 +173,16 @@ class TinyRecursiveReasoningModel_ACTV1_Inner(nn.Module):
             self.q_head.bias.fill_(-5)  # type: ignore
 
     def _input_embeddings(self, input: torch.Tensor, puzzle_identifiers: torch.Tensor):
+        # ---
+        # MODIFICATION #2: Use the new input_proj layer
+        # ---
+        # DELETED: embedding = self.embed_tokens(input.to(torch.int32))
         # Token embedding
-        embedding = self.embed_tokens(input.to(torch.int32))
+        # embedding = self.embed_tokens(input.to(torch.int32))
+        
+        # Project our (B, L, 2) input to (B, L, D)
+        embedding = self.input_proj(input.to(self.forward_dtype))
+        # --- END OF MODIFICATION #2 ---
 
         # Puzzle embeddings
         if self.config.puzzle_emb_ndim > 0:
@@ -217,6 +238,7 @@ class TinyRecursiveReasoningModel_ACTV1_Inner(nn.Module):
 
         # LM Outputs
         new_carry = TinyRecursiveReasoningModel_ACTV1InnerCarry(z_H=z_H.detach(), z_L=z_L.detach())  # New carry no grad
+        
         output = self.lm_head(z_H)[:, self.puzzle_emb_len:]
         q_logits = self.q_head(z_H[:, 0]).to(torch.float32) # Q-head; uses the first puzzle_emb position
         return new_carry, output, (q_logits[..., 0], q_logits[..., 1])
